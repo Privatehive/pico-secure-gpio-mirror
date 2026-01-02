@@ -1,0 +1,13 @@
+{
+  "version": "0.0.0",
+  "projectName": "pico-secure-gpio-mirror",
+  "projectDescription": "Mirrors the GPIO pins between two Raspberry Pi Picos via an encrypted protocol.",
+  "vendor": "Björn Stresing",
+  "contact": "bjoern.stresing@gmx.de",
+  "domain": "de.privatehive",
+  "copyrightYear": "2025",
+  "repository": "https://github.com/Privatehive/pico-secure-gpio-mirror",
+  "topics": ["Raspberry", "Pico", "encryption", "EIA-485"],
+  "homepage": "https://github.com/Privatehive/pico-secure-gpio-mirror",
+  "license": "GPL"
+}
