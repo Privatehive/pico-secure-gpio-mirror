@@ -19,19 +19,30 @@
 #include "portable8439.h"
 
 //----------------change if desired----------------
+
 #define UART_ID uart1
-#define BAUD_RATE 115200 // must match the spects of an rs-485
+#define BAUD_RATE 115200 //115200 // must match the spects of an rs-485
 // https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_gpio_1autotoc_md0
 #define UART_TX_PIN 4 // GPIO pin must support the selected uart interface selected via "UART_ID"
 #define UART_RX_PIN 5 // GPIO pin must support the selected uart interface selected via "UART_ID"
 #define GPIO_PRIMARY_SECONDARY_PIN 3 // GPIO pin either pulled to gnd or open. If pulled to ground the device will run as Primary. If open the device will run as Secondary.
 
 
+#ifndef NDEBUG
+#define GPIO_MASK         0b00000011111111111111111111000100 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
+#define GPIO_IO_SELECTION 0b00000000000000000111111111111111 // 1 stands for input 0 stands for output (from left to right pint 0 ... NUM_BANK0_GPIOS - 1)
+#define GPIO_IO_INVERTED  0b00000011111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
+#else
+//#define GPIO_MASK         0b00000011111111111111111111000111 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
+#define GPIO_MASK         0b00000011111111111111111111000100
+#define GPIO_IO_SELECTION 0b00000000000000000111111111111111 // 1 stands for input 0 stands for output (from left to right pint 0 ... NUM_BANK0_GPIOS - 1)
+#define GPIO_IO_INVERTED  0b00000011111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
+#endif
 
 //#define DBG_LOG
+
 //-------------------------------------------------
 
-#define UART_FIFO_SIZE 4 // not documented
 #define MICROSECONDS 1
 #define MILLISECONDS 1000
 #define SECONDS (MILLISECONDS * 1000)
@@ -63,21 +74,39 @@ pico_unique_board_id_t board_id;
 volatile bool is_primary = false;
 uint8_t internal_nonce[RFC_8439_NONCE_SIZE] = {0};
 
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
+#define BYTE_TO_BINARY(byte, mask_byte)  \
+((mask_byte) & 0x80 ? ((byte) & 0x80 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x40 ? ((byte) & 0x40 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x20 ? ((byte) & 0x20 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x10 ? ((byte) & 0x10 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x08 ? ((byte) & 0x08 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x04 ? ((byte) & 0x04 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x02 ? ((byte) & 0x02 ? '1' : '0' ) : 'X'), \
+((mask_byte) & 0x01 ? ((byte) & 0x01 ? '1' : '0' ) : 'X')
+
+typedef enum State {
+    STATE_UNK = 0x00,
+    STATE_ERR = 0x01,
+    STATE_KEY = 0x02,
+    STATE_NOR = 0x03,
+} State;
+
+State state = STATE_UNK;
+
 // stats
-uint32_t message_read_desync_counter = 0;
-uint32_t message_read_timeout_counter = 0;
-uint32_t message_write_timeout_counter = 0;
-uint32_t message_encrypt_error_counter = 0;
-uint32_t message_decrypt_error_counter = 0;
-uint32_t message_decode_error_counter = 0;
-uint32_t missed_response_slot_counter = 0;
+uint32_t message_read_desync_counter, message_read_timeout_counter, message_write_timeout_counter,
+        message_encrypt_error_counter, message_decrypt_error_counter, message_decode_error_counter,
+        missed_response_slot_counter, primary_received_warnings_count, secondary_received_warnings_count,
+        gpio_input_state, gpio_output_state = 0;
 
 typedef enum MessageType {
     ERR = 0x00, // error indicating sth. went wrong - a message was not sent or received
-    NOP = 0x01, // Primary/Secondary empty message no payload is expected
-    KEY = 0x02, // Primary key exchange message
-    ACK = 0x03, // Secondary key exchange acknowledge message
-    CHG = 0x04, // Primary/Secondary io change message
+    WRN = 0x01, // Primary/Secondary can signal warnings to each other if sth. went wrong
+    NOP = 0x02, // Primary/Secondary empty message no payload is expected
+    KEY = 0x03, // Primary key exchange message
+    ACK = 0x04, // Secondary key exchange acknowledge message
+    CHG = 0x05, // Primary/Secondary io change message
 } MessageType;
 
 const uint8_t *get_shuffle_nonce() {
@@ -92,7 +121,6 @@ const uint8_t *get_shuffle_nonce() {
 }
 
 void gen_rand_key(uint8_t key[RFC_8439_KEY_SIZE]) {
-
     uint64_t rand;
     rand = get_rand_64();
     memcpy(key, &rand, 8);
@@ -108,13 +136,62 @@ void drain_uart_rx_fifo() {
     while (uart_is_readable(UART_ID)) uart_getc(UART_ID);
 }
 
+// print the number "in" as binary and clamp it to lsb_s bits
+void print_binary_clamped_masked(const uint32_t in, const uint32_t mask, const uint32_t lsb_s, char out[33]) {
+    hard_assert(lsb_s <= 32);
+    char tmp[33] = {0};
+    sprintf(tmp, ""BYTE_TO_BINARY_PATTERN""BYTE_TO_BINARY_PATTERN""BYTE_TO_BINARY_PATTERN""BYTE_TO_BINARY_PATTERN,
+            BYTE_TO_BINARY(in>>24, mask>>24), BYTE_TO_BINARY(in>>16, mask>>16), BYTE_TO_BINARY(in>>8, mask>>8),
+            BYTE_TO_BINARY(in, mask));
+    strncpy(out, tmp + 32 - lsb_s, lsb_s);
+}
+
+// print the number "in" as binary and clap it to lsb_s bits
+void print_binary_clamped(const uint32_t in, const uint32_t lsb_s, char out[33]) {
+    print_binary_clamped_masked(in, 0xffffffff, lsb_s, out);
+}
+
+// print the number "in" as binary and clap it to lsb_s bit
+void print_binary(const uint32_t in, char out[33]) {
+    print_binary_clamped_masked(in, 0xffffffff, 32, out);
+}
+
 void print_stats() {
+
+    uint32_t tmp_state = atomic_load(&state);
+    const char *state_str = "";
+
+    switch (tmp_state) {
+        case STATE_ERR:
+            state_str = "erroneous";
+            break;
+        case STATE_KEY:
+            state_str = "key exchange";
+            break;
+        case STATE_NOR:
+            state_str = "normal";
+            break;
+        default:
+            state_str = "unknown";
+    }
+
+    char gpio_output_state_str[32] = {0};
+    char gpio_input_state_str[32] = {0};
+
+    print_binary_clamped_masked(
+        atomic_load(&gpio_input_state), GPIO_MASK & (is_primary ? GPIO_IO_SELECTION : ~GPIO_IO_SELECTION),
+        NUM_BANK0_GPIOS, gpio_input_state_str);
+    print_binary_clamped_masked(
+        atomic_load(&gpio_output_state), GPIO_MASK & (is_primary ? ~GPIO_IO_SELECTION : GPIO_IO_SELECTION),
+        NUM_BANK0_GPIOS, gpio_output_state_str);
+
     printf(
-        "----------------stats----------------\nmessage_read_desync_counter: %ld\nmessage_read_timeout_counter: %ld\nmessage_write_timeout_counter: %ld\nmessage_encrypt_error_counter: %ld\nmessage_decrypt_error_counter: %ld\nmessage_decode_error_counter: %ld\nmissed_response_slot_counter: %ld\n",
+        "---------------stats---------------\nmessage_read_desync_counter       %ld\nmessage_read_timeout_counter      %ld\nmessage_write_timeout_counter     %ld\nmessage_encrypt_error_counter     %ld\nmessage_decrypt_error_counter     %ld\nmessage_decode_error_counter      %ld\nmissed_response_slot_counter      %ld\nprimary_received_warnings_count   %ld\nsecondary_received_warnings_count %ld\nstatus                            %s\ngpio_input_state                  (GP%d) %s (GP0)\ngpio_output_state                 (GP%d) %s (GP0)\n",
         atomic_load(&message_read_desync_counter), atomic_load(&message_read_timeout_counter),
         atomic_load(&message_write_timeout_counter), atomic_load(&message_encrypt_error_counter),
         atomic_load(&message_decrypt_error_counter), atomic_load(&message_decode_error_counter),
-        atomic_load(&missed_response_slot_counter));
+        atomic_load(&missed_response_slot_counter), atomic_load(&primary_received_warnings_count),
+        atomic_load(&secondary_received_warnings_count), state_str, NUM_BANK0_GPIOS, gpio_input_state_str, NUM_BANK0_GPIOS, gpio_output_state_str);
 }
 
 void reset_stats() {
@@ -125,20 +202,8 @@ void reset_stats() {
     atomic_store(&message_decrypt_error_counter, 0);
     atomic_store(&message_decode_error_counter, 0);
     atomic_store(&missed_response_slot_counter, 0);
-}
-
-// Reads all data that is currently available in the uart fifo without waiting for new data. The fifo can hold up to UART_FIFO_SIZE
-size_t read_uart_rx_fifo(uint8_t buf[UART_FIFO_SIZE]) {
-    size_t bytes_read = 0;
-    for (int i = 0; i < UART_FIFO_SIZE; i++) {
-        if (uart_is_readable(UART_ID)) {
-            buf[i] = uart_getc(UART_ID);
-            bytes_read++;
-        } else {
-            break;
-        }
-    }
-    return bytes_read;
+    atomic_store(&primary_received_warnings_count, 0);
+    atomic_store(&secondary_received_warnings_count, 0);
 }
 
 // Ensures a complete message is read from uart. As soon as we return from this function and true is returned we are synced to the message stream. If false is retuned the sync is lost, and we are reading messages partially or not at all
@@ -262,6 +327,9 @@ MessageType send_receive_msg(MessageType send_type, uint8_t payload[static MESSA
         if (read_raw_message(raw_msg)) {
             // we got a raw message from Secondary - decode message
             ret = decode_raw_message(raw_msg, payload);
+            if (ret == WRN) {
+                atomic_fetch_add(&secondary_received_warnings_count, 1);
+            }
         }
     }
     return ret;
@@ -278,6 +346,9 @@ MessageType receive_send_msg(MessageType send_type, uint8_t payload[static MESSA
         uint8_t tmp_payload[MESSAGE_PAYLOAD_SIZE] = {0};
         ret = decode_raw_message(raw_msg, tmp_payload);
         if (ret != ERR) {
+            if (ret == WRN) {
+                atomic_fetch_add(&primary_received_warnings_count, 1);
+            }
             // Secondary write message
             encode_raw_message(send_type, payload, raw_msg);
             sleep_us(MAX((int32_t)symbol_duration_us - (int32_t)(time_us_32() - time_start), 0));
@@ -295,6 +366,29 @@ MessageType receive_send_msg(MessageType send_type, uint8_t payload[static MESSA
     return ret;
 }
 
+uint32_t gpio_read() {
+
+    const uint32_t intput_mask = GPIO_MASK & (is_primary ? GPIO_IO_SELECTION : ~GPIO_IO_SELECTION);
+    const uint32_t input = gpio_get_all();
+    const uint32_t new_input = input & intput_mask;
+    atomic_store(&gpio_input_state, new_input);
+    return new_input;
+}
+
+void gpio_write(const uint32_t value) {
+
+    const uint32_t output_mask = GPIO_MASK & (is_primary ? ~GPIO_IO_SELECTION : GPIO_IO_SELECTION);
+    const uint32_t inverted = (is_primary ? GPIO_IO_INVERTED : ~GPIO_IO_INVERTED);
+    const uint32_t new_output = value ^ inverted & output_mask;
+    const uint32_t old_output = atomic_exchange(&gpio_output_state, new_output);
+    if (old_output != new_output) {
+#ifdef DBG_LOG
+        printf("[D] Apply changes to gpio\n");
+#endif
+        gpio_put_masked(output_mask, new_output);
+    }
+}
+
 // blocks till the key exchange finished
 void key_exchange(uint8_t key[RFC_8439_KEY_SIZE]) {
     MessageType result = ERR;
@@ -310,10 +404,9 @@ void key_exchange(uint8_t key[RFC_8439_KEY_SIZE]) {
 }
 
 void core1_entry() {
-
     flash_init_core1();
 
-    flash_erase();
+    //flash_erase(); // uncomment to test key exchange
 
     const uint8_t *page;
     flash_read_page(&page);
@@ -322,6 +415,7 @@ void core1_entry() {
         // key exchange already finished - load key from flash
         memcpy(initial_key, page, RFC_8439_KEY_SIZE);
     } else {
+        atomic_store(&state, STATE_KEY);
         // perform key exchange
         uint8_t new_key[RFC_8439_KEY_SIZE] = {0};
         if (is_primary) gen_rand_key(new_key);
@@ -329,16 +423,43 @@ void core1_entry() {
         // write key
         flash_write(new_key, RFC_8439_KEY_SIZE);
         memcpy(initial_key, new_key, RFC_8439_KEY_SIZE);
-        if (is_primary) sleep_us(1 *SECONDS);
+        sleep_us(5 * SECONDS);
     }
 
     reset_stats();
 
+    atomic_store(&state, STATE_NOR);
+
+    MessageType last_result = NOP;
+
     while (1) {
         // normal operation
-        uint8_t dummy_payload[32] = {"hello"};
-        if (is_primary) send_receive_msg(NOP, dummy_payload);
-        else receive_send_msg(NOP, dummy_payload);
+
+        if (is_primary) {
+            uint32_t input = gpio_read();
+            uint8_t payload[32] = {0};
+            memcpy(payload, &input, sizeof(payload));
+            last_result = send_receive_msg(last_result ? NOP : WRN, payload);
+            if (last_result == ERR) atomic_store(&state, STATE_ERR);
+            else if (last_result == WRN) atomic_store(&state, STATE_ERR);
+            else {
+                atomic_store(&state, STATE_NOR);
+                memcpy(&input, payload, sizeof(input));
+                gpio_write(input);
+            }
+        } else {
+            uint32_t input = gpio_read();
+            atomic_store(&gpio_input_state, input);
+            uint8_t payload[32] = {0};
+            memcpy(payload, &input, sizeof(payload));
+            MessageType result = receive_send_msg(NOP, payload);
+            if (result == ERR || result == WRN) atomic_store(&state, STATE_ERR);
+            else {
+                atomic_store(&state, STATE_NOR);
+                memcpy(&input, payload, sizeof(input));
+                gpio_write(input);
+            }
+        }
     }
 }
 
@@ -359,13 +480,36 @@ int main() {
     gpio_init(GPIO_PRIMARY_SECONDARY_PIN);
     gpio_set_pulls(GPIO_PRIMARY_SECONDARY_PIN, true, false);
     gpio_set_dir(GPIO_PRIMARY_SECONDARY_PIN, GPIO_IN);
-
     sleep_us(10); // wait for pull up voltage to settle
-
     is_primary = !gpio_get(GPIO_PRIMARY_SECONDARY_PIN);
-
     if (is_primary) printf("[I] Running as Primary\n");
     else printf("[I] Running as Secondary\n");
+    //
+
+    gpio_init_mask(GPIO_MASK);
+    const uint32_t inputs = GPIO_MASK & (is_primary ? GPIO_IO_SELECTION : ~GPIO_IO_SELECTION);
+    gpio_set_dir_in_masked(inputs);
+    const uint32_t outputs = GPIO_MASK & (is_primary ? ~GPIO_IO_SELECTION : GPIO_IO_SELECTION);
+    gpio_set_dir_out_masked(outputs);
+    const uint32_t inverted = (is_primary ? GPIO_IO_INVERTED : ~GPIO_IO_INVERTED);
+
+    for (int i = 0; i < sizeof(inputs) * 8; i++) {
+        if (inputs & (1u << i)) {
+            if (inverted & (1u << i)) {
+                gpio_set_pulls(i, false, true);
+            }
+            else {
+                gpio_set_pulls(i, true, false);
+            }
+        }
+    }
+    sleep_us(10); // wait for pull up voltage to settle
+
+    char in_bin_str[33] = {0};
+    print_binary_clamped_masked(GPIO_IO_SELECTION, GPIO_MASK, NUM_BANK0_GPIOS, in_bin_str);
+    printf("[I] Input pins  (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS, in_bin_str);
+    print_binary_clamped_masked(~GPIO_IO_SELECTION,GPIO_MASK,NUM_BANK0_GPIOS, in_bin_str);
+    printf("[I] Output pins (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS, in_bin_str);
 
     multicore_launch_core1(core1_entry);
     flash_init_core0();
@@ -376,9 +520,33 @@ int main() {
     uint32_t time_start = time_us_32();
 
     while (1) {
-        status_led_set_state(led_on);
-        print_stats();
-        led_on = !led_on;
-        sleep_us(1*SECONDS);
+        switch (atomic_load(&state)) {
+            case STATE_KEY: {
+                status_led_set_state(led_on);
+                led_on = !led_on;
+                sleep_us(500 * MILLISECONDS);
+                break;
+            }
+            case STATE_NOR: {
+                status_led_set_state(true);
+                sleep_us(500 * MILLISECONDS);
+                break;
+            }
+            case STATE_ERR: {
+                status_led_set_state(led_on);
+                led_on = !led_on;
+                sleep_us(50 * MILLISECONDS);
+                break;
+            }
+            default:
+                status_led_set_state(false);
+                sleep_us(500 * MILLISECONDS);
+                break;
+        }
+
+        if (time_us_32() - time_start > 5 * SECONDS) {
+            print_stats();
+            time_start = time_us_32();
+        }
     }
 }
