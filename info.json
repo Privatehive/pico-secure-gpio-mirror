@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "1.0.0",
   "projectName": "pico-secure-gpio-mirror",
   "projectDescription": "Mirrors the GPIO pins between two Raspberry Pi Picos via an encrypted protocol.",
   "vendor": "Björn Stresing",

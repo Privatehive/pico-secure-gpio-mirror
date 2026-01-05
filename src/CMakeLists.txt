@@ -1,4 +1,4 @@
-add_executable(blink_simple
+add_executable(gpio-mirror
         main.c
         flash.c
         portable8439.h
@@ -6,11 +6,11 @@ add_executable(blink_simple
 )
 
 # pull in common dependencies
-target_link_libraries(blink_simple pico_stdlib pico_status_led pico_multicore pico_rand pico_atomic)
+target_link_libraries(gpio-mirror pico_stdlib pico_status_led pico_multicore pico_rand pico_atomic)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-    pico_enable_stdio_usb(blink_simple 1)
-    pico_enable_stdio_uart(blink_simple 0)
+    pico_enable_stdio_usb(gpio-mirror 1)
+    pico_enable_stdio_uart(gpio-mirror 0)
     message(STATUS "Enable stdio via usb and disable stdio via uart")
 endif()
 
@@ -23,11 +23,11 @@ else ()
     message(FATAL_ERROR "INITIAL_KEY list must have a size of 32 entries (which equals 64 bit)")
 endif ()
 
-target_compile_definitions(blink_simple PRIVATE INITIAL_KEY=${INITIAL_KEY_DEFINE})
+target_compile_definitions(gpio-mirror PRIVATE INITIAL_KEY=${INITIAL_KEY_DEFINE})
 
-# create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(blink_simple)
+pico_add_extra_outputs(gpio-mirror)
 
-pico_set_program_version(blink_simple "0.0.0")
-pico_set_program_description(blink_simple "Mirrors the GPIO pins between two Raspberry Pi Picos via an encrypted protocol.")
-pico_set_program_url(blink_simple "https://github.com/Privatehive/pico-secure-gpio-mirror")
+pico_set_program_name(gpio-mirror "gpio-mirror")
+pico_set_program_version(gpio-mirror "1.0.0")
+pico_set_program_description(gpio-mirror "Mirrors the GPIO pins between two Raspberry Pi Picos via an encrypted protocol.")
+pico_set_program_url(gpio-mirror "https://github.com/Privatehive/pico-secure-gpio-mirror")

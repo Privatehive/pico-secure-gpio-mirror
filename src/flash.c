@@ -3,7 +3,6 @@
 #include <stdatomic.h>
 #include "hardware/sync.h"
 #include "pico/flash.h"
-#include "pico/mem_ops.h"
 #include "flash.h"
 
 // Set the target offest to the last sector of flash. Must be aligned with FLASH_SECTOR_SIZE. Make sure to not overwrite the addresses where the program is located.

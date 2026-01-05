@@ -60,10 +60,14 @@ class PicoSecureGpioMirrorConan(ConanFile):
         tc.generate()
         ms.generate()
 
-    def source(self):
-        get(self, **self.conan_data["sources"][self.version], strip_root=True)
+    def build(self):
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
+        cmake.install()
 
     def package(self):
-        copy(self, pattern="*", src=self.source_folder, dst=self.package_folder)
+        copy(self, pattern="gpio-mirror.*", src=os.path.join(self.build_folder, "src"), dst=self.package_folder)
 
-    #def package_info(self):
+    def deploy(self):
+        copy(self, "gpio-mirror.uf2", src=self.package_folder, dst=self.deploy_folder)
