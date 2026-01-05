@@ -8,8 +8,11 @@ add_executable(blink_simple
 # pull in common dependencies
 target_link_libraries(blink_simple pico_stdlib pico_status_led pico_multicore pico_rand pico_atomic)
 
-#pico_enable_stdio_usb(blink_simple 1)
-#pico_enable_stdio_uart(blink_simple 0)
+if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+    pico_enable_stdio_usb(blink_simple 1)
+    pico_enable_stdio_uart(blink_simple 0)
+    message(STATUS "Enable stdio via usb and disable stdio via uart")
+endif()
 
 set(INITIAL_KEY "0xe6;0x02;0xc9;0x20;0xcb;0x00;0xb6;0x92;0x40;0x16;0x00;0xce;0xdd;0x65;0x95;0x5c;0x24;0x32;0x61;0x2e;0xbb;0xc6;0xf8;0x5c;0x9f;0x2f;0x46;0x8a;0x2d;0x9c;0x71;0x74" CACHE STRING "The key that is used once for the first key exchange")
 

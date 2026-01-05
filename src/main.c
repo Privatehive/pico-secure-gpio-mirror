@@ -29,14 +29,14 @@
 
 
 #ifndef NDEBUG
-#define GPIO_MASK         0b00000011111111111111111111000100 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
+#define GPIO_MASK         0b00011100011111111111111111000100 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
 #define GPIO_IO_SELECTION 0b00000000000000000111111111111111 // 1 stands for input 0 stands for output (from left to right pint 0 ... NUM_BANK0_GPIOS - 1)
-#define GPIO_IO_INVERTED  0b00000011111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
+#define GPIO_IO_INVERTED  0b00011111111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
 #else
-//#define GPIO_MASK         0b00000011111111111111111111000111 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
-#define GPIO_MASK         0b00000011111111111111111111000100
+//#define GPIO_MASK         0b00011100011111111111111111000100 // pins that are watched and changed. 0 pin is ignored, 1 pin is considered.
+#define GPIO_MASK         0b00011100011111111111111111000100
 #define GPIO_IO_SELECTION 0b00000000000000000111111111111111 // 1 stands for input 0 stands for output (from left to right pint 0 ... NUM_BANK0_GPIOS - 1)
-#define GPIO_IO_INVERTED  0b00000011111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
+#define GPIO_IO_INVERTED  0b00011111111111111000000000000000 // 1 stands for inverted input or output. If the input is inverted you have to pull it to high else to low
 #endif
 
 //#define DBG_LOG
@@ -175,8 +175,8 @@ void print_stats() {
             state_str = "unknown";
     }
 
-    char gpio_output_state_str[32] = {0};
-    char gpio_input_state_str[32] = {0};
+    char gpio_output_state_str[33] = {0};
+    char gpio_input_state_str[33] = {0};
 
     print_binary_clamped_masked(
         atomic_load(&gpio_input_state), GPIO_MASK & (is_primary ? GPIO_IO_SELECTION : ~GPIO_IO_SELECTION),
@@ -191,7 +191,7 @@ void print_stats() {
         atomic_load(&message_write_timeout_counter), atomic_load(&message_encrypt_error_counter),
         atomic_load(&message_decrypt_error_counter), atomic_load(&message_decode_error_counter),
         atomic_load(&missed_response_slot_counter), atomic_load(&primary_received_warnings_count),
-        atomic_load(&secondary_received_warnings_count), state_str, NUM_BANK0_GPIOS, gpio_input_state_str, NUM_BANK0_GPIOS, gpio_output_state_str);
+        atomic_load(&secondary_received_warnings_count), state_str, NUM_BANK0_GPIOS - 1, gpio_input_state_str, NUM_BANK0_GPIOS - 1, gpio_output_state_str);
 }
 
 void reset_stats() {
@@ -438,7 +438,7 @@ void core1_entry() {
         if (is_primary) {
             uint32_t input = gpio_read();
             uint8_t payload[32] = {0};
-            memcpy(payload, &input, sizeof(payload));
+            memcpy(payload, &input, sizeof(input));
             last_result = send_receive_msg(last_result ? NOP : WRN, payload);
             if (last_result == ERR) atomic_store(&state, STATE_ERR);
             else if (last_result == WRN) atomic_store(&state, STATE_ERR);
@@ -451,7 +451,7 @@ void core1_entry() {
             uint32_t input = gpio_read();
             atomic_store(&gpio_input_state, input);
             uint8_t payload[32] = {0};
-            memcpy(payload, &input, sizeof(payload));
+            memcpy(payload, &input, sizeof(input));
             MessageType result = receive_send_msg(NOP, payload);
             if (result == ERR || result == WRN) atomic_store(&state, STATE_ERR);
             else {
@@ -507,9 +507,9 @@ int main() {
 
     char in_bin_str[33] = {0};
     print_binary_clamped_masked(GPIO_IO_SELECTION, GPIO_MASK, NUM_BANK0_GPIOS, in_bin_str);
-    printf("[I] Input pins  (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS, in_bin_str);
+    printf("[I] Input pins  (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS - 1, in_bin_str);
     print_binary_clamped_masked(~GPIO_IO_SELECTION,GPIO_MASK,NUM_BANK0_GPIOS, in_bin_str);
-    printf("[I] Output pins (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS, in_bin_str);
+    printf("[I] Output pins (GP%d) %s (GP0)\n", NUM_BANK0_GPIOS - 1, in_bin_str);
 
     multicore_launch_core1(core1_entry);
     flash_init_core0();
